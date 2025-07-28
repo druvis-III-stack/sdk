@@ -42,7 +42,7 @@ function setObjmJsonConfig() {
 
   props.objm.json = {
     /**
-     * 地形服务配置
+     * 地形服务配置11111111
      */
     "asset": {
         "type": "ESObjectsManager",
