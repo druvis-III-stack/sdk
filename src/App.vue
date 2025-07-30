@@ -70,8 +70,8 @@ function updateHeight(): number {
 }
 
 function addPolygon(hierarchy: Cesium.Cartesian3[]) {
-  if (addRegion) {
-    viewer.entities.remove(addRegion);
+  if (addRegion && view) {
+    view.entities.remove(addRegion);
   }
 
   addRegion = viewer.entities.add({
@@ -116,25 +116,30 @@ function draw() {
   maxHeight = stop;
   speed = spd;
 
-  viewer.entities.removeAll(); // 清除所有实体
-  positions = [];
+ // 确保 viewer 已被正确初始化
+  if (viewer) {
+    viewer.entities.removeAll(); // 清除所有实体
+    positions = [];
 
-  if (handler) handler.destroy();
-  handler = new Cesium.ScreenSpaceEventHandler(viewer.canvas);
+    if (handler) handler.destroy();
+    handler = new Cesium.ScreenSpaceEventHandler(viewer.canvas);
 
-  handler.setInputAction(function (event: any) {
-    const earthPosition = viewer.scene.pickPosition(event.position);
-    if (earthPosition) {
-      positions.push(earthPosition);
-    }
-  }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+    handler.setInputAction(function (event: any) {
+      const earthPosition = viewer.scene.pickPosition(event.position);
+      if (earthPosition) {
+        positions.push(earthPosition);
+      }
+    }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
 
-  handler.setInputAction(function () {
-    if (positions.length > 0) {
-      addPolygon(positions);
-      positions = [];
-    }
-  }, Cesium.ScreenSpaceEventType.RIGHT_CLICK);
+    handler.setInputAction(function () {
+      if (positions.length > 0) {
+        addPolygon(positions);
+        positions = [];
+      }
+    }, Cesium.ScreenSpaceEventType.RIGHT_CLICK);
+  } else {
+    console.error('Viewer is not initialized');
+  }
 }
 
 onBeforeUnmount(() => {
