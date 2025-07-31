@@ -10,6 +10,15 @@ export default defineConfig({
       cesium: path.resolve(__dirname, 'node_modules/cesium/Source/Cesium')
     }
   },
+  server: {
+    proxy: {
+      '/tiles': {
+        target: 'http://ecn.t2.tiles.virtualearth.net',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/tiles/, '')
+      }
+    }
+  },
   plugins: [
     vue(),
     cesium(),
