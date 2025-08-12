@@ -3,23 +3,55 @@
     <div id="cesiumContainer" ref="cesiumContainer" class="cesium-viewer"></div>
     <div v-if="loading">Loading Cesium...</div>
     <div v-if="error" class="error">{{ error }}</div>
-    <div>
-      <label>洪水水位（米）：</label>
-      <input type="number" v-model.number="floodHeight" @change="updateFlood" />
+  </div>
+  <div>
+    <button @click="startDrawing" :disabled="isDraw">绘制淹没区域</button>
+    <div v-if="minWaterHeight !== null && maxWaterHeight !== null">
+      <p>最小高程: {{ minWaterHeight }} 米</p>
+      <p>最大高程: {{ maxWaterHeight }} 米</p>
+      <div>
+        <label>当前水位: {{ waterHeight }} 米</label>
+        <input 
+          type="range" 
+          :min="minWaterHeight" 
+          :max="maxWaterHeight" 
+          v-model.number="waterHeight"
+        />
+      </div>
     </div>
+  </div>
+   <div>
+    <!-- 其他内容 -->
   </div>
 </template>
 
 <script setup lang="ts">
-import { ESObjectsManager } from 'earthsdk3';
-import { onMounted, ref, onBeforeUnmount } from 'vue';
+import { onMounted, ref, onUnmounted, watch } from 'vue';
 import * as Cesium from 'cesium';
+import * as turf from '@turf/turf';
+import type { LineString } from 'geojson';
+import type { Feature } from 'geojson';
+import type { Position } from 'geojson';
+import length from '@turf/length';
 
 const loading = ref(true);
 const error = ref<string | null>(null);
-const floodHeight = ref(20); // 默认水位
 let viewer: Cesium.Viewer | null = null;
-let floodEntity: Cesium.Entity | null = null;
+let tileset: Cesium.Cesium3DTileset | null = null;
+
+// 响应式数据
+const isDraw = ref(false);
+const maxWaterHeight = ref<number | null>(null);
+const minWaterHeight = ref<number | null>(null);
+const waterHeight = ref(0);
+const waterPrimitive = ref<Cesium.Primitive | undefined>(undefined);
+
+// 绘制相关变量
+let activeShapePoints: Cesium.Cartesian3[] = [];
+let floatingPoint: Cesium.Entity | undefined = undefined;
+let activeShape: Cesium.Entity | undefined = undefined;
+let handler: Cesium.ScreenSpaceEventHandler | undefined = undefined;
+let tempEntities: Cesium.Entity[] = [];
 
 // Cesium ion 配置
 const ION_TOKEN = import.meta.env.VITE_VUE_APP_CESIUM_ION_TOKEN || "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJqdGkiOiI1YTI5ODRmYi1mZWMyLTRmZTUtYTgxNi04NTlkNDM5MjZmNDAiLCJpZCI6Mjg3MzI2LCJpYXQiOjE3NTM3OTA0MDh9.pJwV7HKuIvI_mABidxub66UpR8fyqMJjPLq-LrwxgmY";
@@ -30,64 +62,303 @@ Cesium.Ion.defaultAccessToken = ION_TOKEN;
 onMounted(async () => {
   try {
     const terrainProvider = await Cesium.CesiumTerrainProvider.fromIonAssetId(TERRAIN_ASSET_ID);
-
     viewer = new Cesium.Viewer('cesiumContainer', {
-      terrainProvider: terrainProvider
+      terrainProvider: terrainProvider,
+      animation: false,
+      homeButton: false,
+      geocoder: false,
+      baseLayerPicker: true,
+      timeline: true,
+      fullscreenButton: false,
+      scene3DOnly: true,
+      infoBox: false,
+      sceneModePicker: false,
+      navigationInstructionsInitiallyVisible: false,
+      navigationHelpButton: false,
+      selectionIndicator: false,
+      shouldAnimate: true,
+      contextOptions: {
+        webgl: {
+          alpha: true,
+          depth: true,
+          stencil: true,
+          antialias: true,
+          premultipliedAlpha: true,
+          preserveDrawingBuffer: true,
+          failIfMajorPerformanceCaveat: true
+        },
+        allowTextureFilterAnisotropic: true
+      },
     });
 
-    addFlood();
+    if (viewer) {
+      (viewer.cesiumWidget.creditContainer as HTMLElement).style.display = "none";
+      viewer.scene.globe.baseColor = Cesium.Color.fromCssColorString('#000d2d');
+      viewer.scene.globe.enableLighting = false;
+      viewer.scene.globe.showGroundAtmosphere = true;
+      viewer.scene.postProcessStages.fxaa.enabled = false;
+      viewer.scene.fog.enabled = false;
+      viewer.scene.globe.depthTestAgainstTerrain = false;
+      viewer.scene.debugShowFramesPerSecond = false;
 
-    loading.value = false;
-  } catch (err) {
-    console.error('Failed to initialize terrain:', err);
-    error.value = 'Failed to load terrain.';
+      tileset = await Cesium.Cesium3DTileset.fromIonAssetId(3595489);
+      viewer.scene.primitives.add(tileset);
+    }
+  } catch (err: any) {
+    error.value = err.message || 'Cesium 加载失败';
+  } finally {
     loading.value = false;
   }
 });
 
-onBeforeUnmount(() => {
-  if (viewer) {
-    viewer.destroy();
-  }
-});
-
-function addFlood() {
+const startDrawing = () => {
+  activeShapePoints = [];
+  floatingPoint = undefined;
+  activeShape = undefined;
+  tempEntities = [];
+  
   if (!viewer) return;
+  viewer.scene.globe.depthTestAgainstTerrain = true;
+  
+  handler = new Cesium.ScreenSpaceEventHandler(viewer.canvas);
+  
+  handler.setInputAction((event: Cesium.ScreenSpaceEventHandler.PositionedEvent) => {
+    const earthPosition = viewer!.scene.pickPosition(event.position);
+    if (Cesium.defined(earthPosition)) {
+      if (activeShapePoints.length === 0) {
+        floatingPoint = createPoint(earthPosition);
+        activeShapePoints.push(earthPosition);
+        const dynamicPositions = new Cesium.CallbackProperty(() => {
+          return new Cesium.PolygonHierarchy(activeShapePoints);
+        }, false);
+         if (!viewer) return;
+        activeShape = viewer.entities.add({
+          polygon: {
+            hierarchy: dynamicPositions,
+            material: Cesium.Color.fromBytes(64, 157, 253, 50),
+            outline: true,
+            outlineColor: Cesium.Color.SKYBLUE,
+            outlineWidth: 4,
+          }
+        });
+      }
+      activeShapePoints.push(earthPosition);
+      tempEntities.push(createPoint(earthPosition));
+    }
+  }, Cesium.ScreenSpaceEventType.LEFT_CLICK);
+  
+  handler.setInputAction((event: Cesium.ScreenSpaceEventHandler.MotionEvent) => {
+    if (Cesium.defined(floatingPoint)) {
+      const newPosition = viewer!.scene.pickPosition(event.endPosition);
+      if (Cesium.defined(newPosition)) {
+        (floatingPoint.position as Cesium.ConstantPositionProperty).setValue(newPosition);
+        activeShapePoints.pop();
+        activeShapePoints.push(newPosition);
+      }
+    }
+  }, Cesium.ScreenSpaceEventType.MOUSE_MOVE);
+  
+  handler.setInputAction(() => {
+  activeShapePoints.pop();
+  if (activeShapePoints.length < 3) return;
 
-  const rectangle = Cesium.Rectangle.fromDegrees(
-    118.81,
-    32.081,
-    119.0,
-    32.17
-  );
+  tempEntities.push(drawPolyline(activeShapePoints)!);
+  const polygon = drawShape(activeShapePoints, Cesium.Color.fromBytes(64, 157, 253, 20));
+  tempEntities.push(polygon);
 
-  // 使用 MaterialProperty 兼容方式创建水体材质
-  const waterMaterial = new Cesium.ImageMaterialProperty({
-    image: Cesium.buildModuleUrl('Assets/Textures/waterNormals.jpg'),
-    color: new Cesium.Color(0.0, 0.3, 0.6, 0.5)
+  viewer!.entities.remove(floatingPoint!);
+  viewer!.entities.remove(activeShape!);
+  floatingPoint = undefined;
+  activeShape = undefined;
+
+  handler?.destroy();
+  handler = undefined;
+
+  // 确保 activeShapePoints 至少包含两个点
+  if (activeShapePoints.length >= 2) {
+    inundationAnalysis();
+  }
+}, Cesium.ScreenSpaceEventType.RIGHT_CLICK);
+  
+  isDraw.value = true;
+};
+
+const createPoint = (worldPosition: Cesium.Cartesian3) => {
+  if (!viewer) throw new Error("Viewer not initialized");
+  return viewer.entities.add({
+    position: worldPosition,
+    point: {
+      color: Cesium.Color.SKYBLUE,
+      pixelSize: 5,
+      heightReference: Cesium.HeightReference.CLAMP_TO_GROUND,
+    },
   });
+};
 
-  floodEntity = viewer.entities.add({
-    name: "Flood Water",
-    rectangle: {
-      coordinates: rectangle,
-      material: waterMaterial,
-      height: floodHeight.value,
-      extrudedHeight: floodHeight.value + 0.1
+const drawShape = (positionData: Cesium.PolygonHierarchy | Cesium.Cartesian3[], material: Cesium.Color) => {
+  if (!viewer) throw new Error("Viewer not initialized");
+  return viewer.entities.add({
+    polygon: {
+      hierarchy: positionData,
+      material: material,
+      outline: true,
+      outlineColor: Cesium.Color.SKYBLUE,
+      outlineWidth: 4,
+      height: 0
     }
   });
+};
 
-  viewer.camera.flyTo({
-    destination: rectangle
-  });
-}
-
-function updateFlood() {
-  if (floodEntity && floodEntity.rectangle) {
-    floodEntity.rectangle.height = new Cesium.ConstantProperty(floodHeight.value);
-    floodEntity.rectangle.extrudedHeight = new Cesium.ConstantProperty(floodHeight.value + 0.1);
+const drawPolyline = (positions: Cesium.Cartesian3[]) => {
+  if (positions.length < 1 || !viewer) return;
+  const startP = positions[0];
+  const endP = positions[positions.length - 1];
+  const closedPositions = [...positions];
+  
+  if (startP.x !== endP.x || startP.y !== endP.y || startP.z !== endP.z) {
+    closedPositions.push(positions[0]);
   }
-}
+
+  return viewer.entities.add({
+    name: 'polyline',
+    polyline: {
+      positions: closedPositions,
+      width: 2.0,
+      material: Cesium.Color.SKYBLUE,
+      clampToGround: true
+    }
+  });
+};
+
+const getAreaHeight = async (positions: Cesium.Cartesian3[]) => {
+  if (!Array.isArray(positions) || positions.length < 2) {
+    throw new Error('Positions must be an array of two or more positions');
+  }
+  if (!viewer) throw new Error("Viewer not initialized");
+  let closedPositions = [...positions];
+  const startP = positions[0];
+  const endP = positions[positions.length - 1];
+
+  if (startP.x !== endP.x || startP.y !== endP.y || startP.z !== endP.z) {
+    closedPositions.push(positions[0]);
+  }
+
+  const tempPoints: [number, number][] = [];
+  for (let i = 0; i < closedPositions.length; i++) {
+    const ellipsoid = viewer.scene.globe.ellipsoid;
+    const cartographic = ellipsoid.cartesianToCartographic(closedPositions[i]);
+    const lat = Cesium.Math.toDegrees(cartographic.latitude);
+    const lng = Cesium.Math.toDegrees(cartographic.longitude);
+    tempPoints.push([lng, lat]);
+  }
+
+  const line = turf.lineString(tempPoints);
+  const chunkLength = 10;
+  const coords = line.geometry.coordinates;
+  const chunks: Feature<LineString>[] = [];
+  let currentChunk: [number, number][] = [coords[0] as [number, number]];
+
+  for (let i = 1; i < coords.length; i++) {
+    const segment = turf.lineString([coords[i - 1] as [number, number], coords[i] as [number, number]]);
+    const segmentDistance = length(segment, { units: 'meters' });
+
+    if (length(turf.lineString(currentChunk), { units: 'meters' }) + segmentDistance > chunkLength) {
+      chunks.push(turf.lineString(currentChunk));
+      currentChunk = [coords[i - 1] as [number, number], coords[i] as [number, number]];
+    } else {
+      currentChunk.push(coords[i] as [number, number]);
+    }
+  }
+
+  if (currentChunk.length > 1) {
+    chunks.push(turf.lineString(currentChunk));
+  }
+
+  const tempArray: Cesium.Cartographic[] = [];
+  chunks.forEach(f => {
+    f.geometry.coordinates.forEach((c: Position) => {
+      if (c.length >= 2) {
+        tempArray.push(Cesium.Cartographic.fromDegrees(c[0], c[1]));
+      }
+    });
+  });
+
+  const updatedPositions = await Cesium.sampleTerrainMostDetailed(
+    viewer.terrainProvider,
+    tempArray
+  );
+
+  let minHeight = Number.MAX_VALUE;
+  let maxHeight = -Number.MAX_VALUE;
+
+  for (let i = 0; i < updatedPositions.length; i++) {
+    const height = updatedPositions[i].height;
+    if (height < minHeight) minHeight = height;
+    if (height > maxHeight) maxHeight = height;
+  }
+
+  minWaterHeight.value = Math.ceil(minHeight);
+  maxWaterHeight.value = Math.ceil(maxHeight);
+  waterHeight.value = minWaterHeight.value;
+
+  isDraw.value = false;
+
+  return {
+    minHeight,
+    maxHeight
+  };
+};
+
+const inundationAnalysis = async () => {
+  if (activeShapePoints.length < 2) {
+    console.error('至少需要两个点来执行淹没分析');
+    return;
+  }
+  const heights = await getAreaHeight(activeShapePoints);
+  console.log('区域高程范围:', heights);
+};
+
+const updateWaterPrimitive = () => {
+  if (!viewer) return;
+  if (waterPrimitive.value) {
+    viewer.scene.primitives.remove(waterPrimitive.value);
+  }
+  
+  if (activeShapePoints.length >= 3 && minWaterHeight.value !== null) {
+    const hierarchy = new Cesium.PolygonHierarchy(activeShapePoints);
+    
+    waterPrimitive.value = viewer.scene.primitives.add(new Cesium.Primitive({
+      geometryInstances: new Cesium.GeometryInstance({
+        geometry: new Cesium.PolygonGeometry({
+          polygonHierarchy: hierarchy,
+          height: waterHeight.value
+        })
+      }),
+      appearance: new Cesium.MaterialAppearance({
+        material: Cesium.Material.fromType('Water', {
+          specular: 0.2,
+          fresnelPower: 4,
+          normalMap: './flood.jpeg'
+        })
+      })
+    }));
+  }
+};
+
+watch(waterHeight, () => {
+  updateWaterPrimitive();
+});
+
+onUnmounted(() => {
+  handler?.destroy();
+  tempEntities.forEach(entity => {
+    viewer?.entities.remove(entity);
+  });
+  if (waterPrimitive.value) {
+    viewer?.scene.primitives.remove(waterPrimitive.value);
+  }
+  viewer?.destroy();
+});
 </script>
 
 <style scoped>

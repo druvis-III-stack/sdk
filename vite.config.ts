@@ -3,6 +3,7 @@ import { defineConfig, normalizePath } from 'vite';
 import cesium from 'vite-plugin-cesium';
 import { viteStaticCopy } from 'vite-plugin-static-copy';
 import path from 'path';
+
 export default defineConfig({
   resolve: {
     alias: {
@@ -14,6 +15,11 @@ export default defineConfig({
     proxy: {
       '/tiles': {
         target: 'http://ecn.t2.tiles.virtualearth.net',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/tiles/, '')
+      },
+      '/tiles-t1': {
+        target: 'http://ecn.t1.tiles.virtualearth.net',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/tiles/, '')
       }
@@ -32,5 +38,4 @@ export default defineConfig({
       ]
     })
   ]
-})
-
+});
