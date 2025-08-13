@@ -22,7 +22,13 @@ export default defineConfig({
         target: 'http://ecn.t1.tiles.virtualearth.net',
         changeOrigin: true,
         rewrite: (path) => path.replace(/^\/tiles/, '')
-      }
+      },
+      '/tiles-t2': {
+        target: 'http://ecn.t3.tiles.virtualearth.net/tiles',
+        changeOrigin: true,
+        secure: false,
+        rewrite: (path) => path.replace(/^\/tiles/, ''),
+      },
     }
   },
   plugins: [

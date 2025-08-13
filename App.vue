@@ -1,10 +1,8 @@
 <template>
-  <div>
+  <div> <!-- 单一的根元素 -->
     <div id="cesiumContainer" ref="cesiumContainer" class="cesium-viewer"></div>
     <div v-if="loading">Loading Cesium...</div>
     <div v-if="error" class="error">{{ error }}</div>
-  </div>
-  <div>
     <button @click="startDrawing" :disabled="isDraw">绘制淹没区域</button>
     <div v-if="minWaterHeight !== null && maxWaterHeight !== null">
       <p>最小高程: {{ minWaterHeight }} 米</p>
@@ -19,9 +17,9 @@
         />
       </div>
     </div>
-  </div>
-   <div>
-    <!-- 其他内容 -->
+    <div>
+      <!-- 其他内容 -->
+    </div>
   </div>
 </template>
 
@@ -225,7 +223,7 @@ const drawPolyline = (positions: Cesium.Cartesian3[]) => {
       positions: closedPositions,
       width: 2.0,
       material: Cesium.Color.SKYBLUE,
-      clampToGround: true
+      clampToGround: false,
     }
   });
 };
